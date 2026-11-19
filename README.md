@@ -1,7 +1,7 @@
 # malloc-YOURSTUDENTID: A Custom Memory Allocator
 
-**Name:** YOUR NAME
-**Student ID:** YOUR STUDENT ID
+**Name:** Cynthia Chepkorir
+**Student ID:** SCT212-0070/2024
 
 ## Build and run
     make
