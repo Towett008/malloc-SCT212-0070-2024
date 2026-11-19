@@ -4,12 +4,14 @@
 // Task 3: my_malloc with first-fit
 // Task 4: splitting blocks
 // Task 5: my_free and coalescing
+// Task 6: my_calloc and my_realloc
 
 // needed so that sbrk() is declared (the assignment asks for this before the includes)
 #define _DEFAULT_SOURCE
 
 #include <stddef.h>    // size_t
 #include <stdint.h>    // uintptr_t, intptr_t, INTPTR_MAX, SIZE_MAX
+#include <string.h>    // memset, memcpy
 #include <unistd.h>    // sbrk, write
 #include "myalloc.h"   // the API, fit_policy_t and heap_stats_t
 
@@ -17,9 +19,10 @@
 #define MAGIC     0x4D414C43  // value stored in every header to spot bad pointers
 #define CHUNK     ((size_t)64 * 1024)  // ask the OS for at least 64 KB each time
 
-// messages printed by my_free (they end with a newline)
+// messages printed by my_free and my_realloc (they end with a newline)
 #define MSG_INVALID "my_free: invalid pointer\n"
 #define MSG_DOUBLE  "my_free: double free detected\n"
+#define MSG_REALLOC "my_realloc: invalid pointer\n"
 
 // the header that sits in front of every payload
 typedef struct block {
@@ -56,13 +59,17 @@ static inline block_t *header(void *ptr)
     return (block_t *)((char *)ptr - HDR);
 }
 
+// ---------------------------------------------------------------
+// The list of blocks and growing the heap
+// ---------------------------------------------------------------
 
 static block_t *head = NULL;    // first block in the list
 static block_t *tail = NULL;    // last block in the list
 static size_t heap_total = 0;   // total bytes obtained from the OS (used for heap_bytes)
 
 // get more memory from the OS and add it to the end of the list as one free block
-
+// need is the payload size wanted, the new block is at least 64 KB
+// returns the new block, or NULL if the OS has no more memory
 static block_t *grow(size_t need)
 {
     size_t   total;   // size of the new block including its header
@@ -82,7 +89,7 @@ static block_t *grow(size_t need)
         total = CHUNK;
     }
 
-
+    // keep the size a multiple of 16 so the next block also starts aligned
     total = align_up(total);
 
     // read the current break without moving it, because it may not be aligned
@@ -121,6 +128,9 @@ static block_t *grow(size_t need)
     return b;
 }
 
+// ---------------------------------------------------------------
+// Allocation with first-fit
+// ---------------------------------------------------------------
 
 // walk the list from the start and return the first free block that is big enough
 // need must already be rounded up to a multiple of 16, returns NULL if no block fits
@@ -138,6 +148,9 @@ static block_t *find_fit(size_t need)
     return NULL;   // no free block is big enough
 }
 
+// cut block b in two if it is much bigger than need
+// the first part keeps exactly need bytes and the rest becomes a new free block after it
+// need must be a multiple of 16 so the new header and its payload stay 16-byte aligned
 static void split_block(block_t *b, size_t need)
 {
     block_t *rest;   // header of the new free block made from the leftover space
@@ -204,7 +217,9 @@ void *my_malloc(size_t size)
     return payload(b);
 }
 
-
+// ---------------------------------------------------------------
+// Freeing and coalescing
+// ---------------------------------------------------------------
 
 // print a message on stderr with write(), printf is not allowed inside the allocator
 static void report(const char *msg, size_t len)
@@ -241,6 +256,30 @@ static void coalesce(void)
     }
 }
 
+// check that ptr looks like a pointer my_malloc gave out and return its header
+// returns NULL if it does not, without ever reading memory outside the heap
+static block_t *find_block(void *ptr)
+{
+    block_t *b;
+
+    // the pointer must be aligned and inside our heap, otherwise even reading its header could crash
+    if (head == NULL ||
+        (uintptr_t)ptr % ALIGNMENT != 0 ||
+        (char *)ptr < (char *)payload(head) ||
+        (char *)ptr >= (char *)payload(tail) + tail->size) {
+        return NULL;
+    }
+
+    b = header(ptr);
+
+    // a wrong magic number means this pointer did not come from my_malloc
+    if (b->magic != MAGIC) {
+        return NULL;
+    }
+
+    return b;
+}
+
 // give a block back, a NULL pointer is ignored, bad pointers and double frees are reported
 void my_free(void *ptr)
 {
@@ -251,19 +290,10 @@ void my_free(void *ptr)
         return;
     }
 
-    // the pointer must be aligned and inside our heap, otherwise even reading its header could crash
-    if (head == NULL ||
-        (uintptr_t)ptr % ALIGNMENT != 0 ||
-        (char *)ptr < (char *)payload(head) ||
-        (char *)ptr >= (char *)payload(tail) + tail->size) {
-        report(MSG_INVALID, sizeof(MSG_INVALID) - 1);
-        return;
-    }
+    b = find_block(ptr);
 
-    b = header(ptr);
-
-    // a wrong magic number means this pointer did not come from my_malloc
-    if (b->magic != MAGIC) {
+    // not a pointer we gave out
+    if (b == NULL) {
         report(MSG_INVALID, sizeof(MSG_INVALID) - 1);
         return;
     }
@@ -279,23 +309,111 @@ void my_free(void *ptr)
     coalesce();
 }
 
+// ---------------------------------------------------------------
+// calloc and realloc
+// ---------------------------------------------------------------
 
-
-// stub, real version comes in Task 6
+// allocate nmemb * size bytes and set them all to zero, returns NULL if the multiplication overflows
 void *my_calloc(size_t nmemb, size_t size)
 {
-    (void)nmemb;
-    (void)size;
-    return NULL;
+    size_t total;
+    void  *p;
+
+    // if nmemb * size does not fit in a size_t the result would wrap around
+    // checking size > SIZE_MAX / nmemb finds this without doing the overflowing multiplication
+    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+        return NULL;
+    }
+
+    total = nmemb * size;
+
+    // my_malloc returns NULL for 0 bytes, which is allowed for calloc too
+    p = my_malloc(total);
+    if (p == NULL) {
+        return NULL;
+    }
+
+    // reused memory still holds old data, so always clear it
+    memset(p, 0, total);
+    return p;
 }
 
-// stub, real version comes in Task 6
+// change the size of a block and keep its contents
 void *my_realloc(void *ptr, size_t size)
 {
-    (void)ptr;
-    (void)size;
-    return NULL;
+    block_t *b;
+    block_t *next;
+    size_t   need;
+    size_t   old_size;
+    size_t   copy;
+    void    *new_ptr;
+
+    // realloc(NULL, n) works like malloc(n)
+    if (ptr == NULL) {
+        return my_malloc(size);
+    }
+
+    // realloc(p, 0) frees the block and returns NULL
+    if (size == 0) {
+        my_free(ptr);
+        return NULL;
+    }
+
+    // the pointer must be a block that is in use
+    b = find_block(ptr);
+    if (b == NULL || b->free) {
+        report(MSG_REALLOC, sizeof(MSG_REALLOC) - 1);
+        return NULL;
+    }
+
+    // rounding up a huge size would wrap around, and the old block stays untouched
+    if (size > SIZE_MAX - (ALIGNMENT - 1)) {
+        return NULL;
+    }
+
+    need = align_up(size);
+
+    // case 1: the new size already fits in this block, so keep the same pointer
+    if (need <= b->size) {
+        old_size = b->size;
+        split_block(b, need);   // give the unused tail back as a free block
+        if (b->size != old_size) {
+            coalesce();         // the new free tail may touch a free block that follows it
+        }
+        return ptr;
+    }
+
+    // case 2: the next block is free, touching this one and big enough together, so absorb it
+    next = b->next;
+    if (next != NULL && next->free &&
+        (char *)payload(b) + b->size == (char *)next &&
+        b->size + HDR + next->size >= need) {
+        b->size += HDR + next->size;   // b now also covers next's header and payload
+        b->next  = next->next;         // unlink next from the list
+        next->magic = 0;               // so an old pointer to next is seen as invalid later
+        if (tail == next) {
+            tail = b;
+        }
+        split_block(b, need);          // give back any space that is more than we need
+        return ptr;
+    }
+
+    // case 3: no room to grow in place, so get a new block, copy, and free the old one
+    new_ptr = my_malloc(size);
+    if (new_ptr == NULL) {
+        return NULL;   // the old block is still valid and unchanged
+    }
+
+    // copy the smaller of the old and new sizes (here the old block is the smaller one)
+    copy = b->size < size ? b->size : size;
+    memcpy(new_ptr, ptr, copy);
+    my_free(ptr);
+    return new_ptr;
 }
+
+// ---------------------------------------------------------------
+// Temporary stubs so the project links. Each one is replaced later.
+// ---------------------------------------------------------------
 
 // stub, real version comes in Task 7
 void heap_stats(heap_stats_t *out)
