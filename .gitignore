@@ -3,3 +3,7 @@ test_myalloc
 t_asan
 bench
 *.o
+myalloc.o
+check_task1.c
+check_task2.c
+
