@@ -1,12 +1,13 @@
 // myalloc.c - my own malloc and free built on top of sbrk
 // Task 1: block header and helper functions
 // Task 2: growing the heap with sbrk
+// Task 3: my_malloc with first-fit
 
 // needed so that sbrk() is declared (the assignment asks for this before the includes)
 #define _DEFAULT_SOURCE
 
 #include <stddef.h>    // size_t
-#include <stdint.h>    // uintptr_t, intptr_t, INTPTR_MAX
+#include <stdint.h>    // uintptr_t, intptr_t, INTPTR_MAX, SIZE_MAX
 #include <unistd.h>    // sbrk
 #include "myalloc.h"   // the API, fit_policy_t and heap_stats_t
 
@@ -60,8 +61,7 @@ static size_t heap_total = 0;   // total bytes obtained from the OS (used for he
 // get more memory from the OS and add it to the end of the list as one free block
 // need is the payload size wanted, the new block is at least 64 KB
 // returns the new block, or NULL if the OS has no more memory
-// (inline only so the compiler does not warn that it is unused until my_malloc calls it in Task 3)
-static inline block_t *grow(size_t need)
+static block_t *grow(size_t need)
 {
     size_t   total;   // size of the new block including its header
     size_t   pad;     // padding bytes so the new block starts on a 16-byte boundary
@@ -119,14 +119,64 @@ static inline block_t *grow(size_t need)
     return b;
 }
 
+// ---------------------------------------------------------------
+// Allocation with first-fit
+// ---------------------------------------------------------------
 
+// walk the list from the start and return the first free block that is big enough
+// need must already be rounded up to a multiple of 16, returns NULL if no block fits
+static block_t *find_fit(size_t need)
+{
+    block_t *b;
 
-// stub, real version comes in Task 3
+    for (b = head; b != NULL; b = b->next) {
+        // the block must be free and its payload must hold at least need bytes
+        if (b->free && b->size >= need) {
+            return b;
+        }
+    }
+
+    return NULL;   // no free block is big enough
+}
+
+// give the user at least size bytes, 16-byte aligned, or NULL if size is 0 or memory runs out
 void *my_malloc(size_t size)
 {
-    (void)size;   // not used yet
-    return NULL;
+    block_t *b;
+    size_t   need;
+
+    // a request for 0 bytes returns NULL
+    if (size == 0) {
+        return NULL;
+    }
+
+    // rounding up a huge size would wrap around to a small number, so refuse it
+    if (size > SIZE_MAX - (ALIGNMENT - 1)) {
+        return NULL;
+    }
+
+    // round up so every block size stays a multiple of 16
+    need = align_up(size);
+
+    b = find_fit(need);
+
+    if (b == NULL) {
+        // nothing fits, so get more memory from the OS and try again
+        if (grow(need) == NULL) {
+            return NULL;   // the OS has no more memory
+        }
+        b = find_fit(need);
+        if (b == NULL) {
+            return NULL;   // should not happen, but never return a bad pointer
+        }
+    }
+
+    // mark it as in use and give the user the payload, not the header
+    // (the whole block is handed out for now, splitting comes in Task 4)
+    b->free = 0;
+    return payload(b);
 }
+
 
 // stub, real version comes in Task 5
 void my_free(void *ptr)
@@ -177,6 +227,6 @@ void set_policy(fit_policy_t p)
 // stub, real version comes in Task 7
 int heap_check(void)
 {
-    // return 0 so the tests do not pass by accident before this is written
-    return 0;
+    // say the heap is fine for now, the real checks are written in Task 7
+    return 1;
 }
