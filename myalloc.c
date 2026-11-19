@@ -2,6 +2,7 @@
 // Task 1: block header and helper functions
 // Task 2: growing the heap with sbrk
 // Task 3: my_malloc with first-fit
+// Task 4: splitting blocks
 
 // needed so that sbrk() is declared (the assignment asks for this before the includes)
 #define _DEFAULT_SOURCE
@@ -139,6 +140,35 @@ static block_t *find_fit(size_t need)
     return NULL;   // no free block is big enough
 }
 
+// cut block b in two if it is much bigger than need
+// the first part keeps exactly need bytes and the rest becomes a new free block after it
+// need must be a multiple of 16 so the new header and its payload stay 16-byte aligned
+static void split_block(block_t *b, size_t need)
+{
+    block_t *rest;   // header of the new free block made from the leftover space
+
+    // the leftover must fit a header plus at least 16 bytes of payload, if not give the whole block
+    if (b->size < need + HDR + ALIGNMENT) {
+        return;
+    }
+
+    // the new header starts right after the first part's payload (char * so we count bytes)
+    rest = (block_t *)((char *)payload(b) + need);
+    rest->size  = b->size - need - HDR;   // what is left after the first part and the new header
+    rest->next  = b->next;                // it takes b's place in the list
+    rest->free  = 1;
+    rest->magic = MAGIC;
+
+    // shrink b to exactly need bytes and link the new block after it
+    b->size = need;
+    b->next = rest;
+
+    // if b was the last block then the new block is now the last one
+    if (tail == b) {
+        tail = rest;
+    }
+}
+
 // give the user at least size bytes, 16-byte aligned, or NULL if size is 0 or memory runs out
 void *my_malloc(size_t size)
 {
@@ -171,12 +201,17 @@ void *my_malloc(size_t size)
         }
     }
 
+    // cut off the unused part so we do not waste it (does nothing if the leftover is too small)
+    split_block(b, need);
+
     // mark it as in use and give the user the payload, not the header
-    // (the whole block is handed out for now, splitting comes in Task 4)
     b->free = 0;
     return payload(b);
 }
 
+// ---------------------------------------------------------------
+// Temporary stubs so the project links. Each one is replaced later.
+// ---------------------------------------------------------------
 
 // stub, real version comes in Task 5
 void my_free(void *ptr)
